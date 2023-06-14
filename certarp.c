@@ -15,6 +15,8 @@
 #include <rte_mbuf.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/sha.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -29,6 +31,8 @@
 #define MAX_CERT_COUNT 5
 #define CERT_COUNT 2
 #define CERT_PATHS {"rootCA.der", "domain-signed.der"}
+
+#define KEY_PATH "domain.key"
 
 /* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
@@ -477,10 +481,12 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	const uint32_t ip_addr[2] = {IP_0, IP_1};
 	const char *cert_paths[CERT_COUNT] = CERT_PATHS;
 	X509 *certs[CERT_COUNT];
+	RSA *rsa;
+	FILE *fp;
 
 	/* Load certificates. */
 	for (int i; i<CERT_COUNT; ++i) {
-		FILE *fp = fopen(cert_paths[i], "r");
+		fp = fopen(cert_paths[i], "r");
 		if (!fp) {
 			printf("failed to load a certificate: %s\n", cert_paths[i]);
 			return;
@@ -489,6 +495,19 @@ lcore_main(struct rte_mempool *mbuf_pool)
 		fclose(fp);
 	}
 	printf("loaded %u certificates.\n", CERT_COUNT);
+
+	/* Load the private key. */
+	fp = fopen(KEY_PATH, "r");
+	if (!fp) {
+		printf("failed to open the private key %s\n", KEY_PATH);
+		return;
+	}
+	rsa = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL);
+	fclose(fp);
+	if (!rsa) {
+		printf("failed to read the private key %s\n", KEY_PATH);
+		return;
+	}
 	
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
