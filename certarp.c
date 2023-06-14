@@ -31,7 +31,7 @@
 #define MAX_CERT_COUNT 1
 #define CERT_COUNT 1
 #define CERT_PATHS {"domain-signed.der"}
-#define ROOT_CERT_PATH "rootCA.der"
+#define ROOT_CERT_PATH "rootCA.crt"
 
 #define KEY_PATH "domain.key"
 
