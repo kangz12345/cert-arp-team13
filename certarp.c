@@ -316,13 +316,21 @@ handle_arp_reply(
 
 	/* Load signature and certificate. */
 	unsigned char *signature = (unsigned char *) malloc(cah->sig_len);
+	size_t signature_len = (size_t) cah->sig_len;
 	X509 *cert = (X509 *) malloc(cah->cert_len);
-	memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), cah->sig_len);
-	memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + cah->sig_len), cah->cert_len);
+	memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), signature_len);
+	memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + signature_len), cah->cert_len);
 	
 	printf("signature size: %u\n", cah->sig_len);
 	printf("cert size: %u\n", cah->cert_len);
 	printf("actual packet size: %u\n", buf->pkt_len);
+
+	/* Digest message. */
+	cah->sig_len = 0;  // sig_len is unknown when the message is digested.
+	unsigned char *message = rte_pktmbuf_mtod_offset(buf, unsigned char *, sizeof(struct rte_ether_hdr));
+	size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(message, message_len, digest);
 
 	
 	printf("cert size: %u\n", buf->pkt_len);
