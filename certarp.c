@@ -38,6 +38,8 @@
 #define RTE_ARP_OP_CERT_REQUEST 11
 #define RTE_ARP_OP_CERT_REPLY 12
 
+#define VERBOSE false
+
 /* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
 /* Custom ARP with certificates header. */
@@ -169,10 +171,10 @@ send_arp_request(uint16_t port, struct rte_arp_ipv4 *arp_data, struct rte_mempoo
 		printf("\nfailed to transmit the request packet.\n");
 		return 1;
 	}
-	else {
+	else if (VERBOSE) {
 		printf("\ntransmitted the ARP request.\n");
-		return 0;
 	}
+	return 0;
 }
 
 static inline void
@@ -214,7 +216,7 @@ handle_arp_request(
 			printf("failed to transmit the vanilla reply packet.\n");
 			return 1;
 		}
-		else {
+		else if (VERBOSE) {
 			printf("transmitted back the vanilla ARP reply.\n");
 		}
 	}
@@ -266,7 +268,7 @@ handle_arp_request(
 				printf("failed to transmit the %u-th reply packet.\n", cert_index);
 				return 1;
 			}
-			else {
+			else if (VERBOSE) {
 				printf("transmitted back the ARP reply (%u/%u).\n", cert_index, cert_cnt);
 			}
 		}
@@ -314,10 +316,7 @@ handle_arp_reply(
 	struct rte_ether_addr *eth_addr,
 	uint32_t ip_addr)
 {
-	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-		
-	}
-	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY)) {
+	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY)) {
 		int retval;
 		uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 		struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
@@ -347,9 +346,11 @@ handle_arp_reply(
 		memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), signature_len);
 		memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + signature_len), cah->cert_len);
 		
-		printf("signature size: %u\n", cah->sig_len);
-		printf("cert size: %u\n", cah->cert_len);
-		printf("actual packet size: %u\n", buf->pkt_len);
+		if (VERBOSE) {
+			printf("signature size: %u\n", cah->sig_len);
+			printf("cert size: %u\n", cah->cert_len);
+			printf("actual packet size: %u\n", buf->pkt_len);
+		}
 
 		/* Digest message. */
 		cah->sig_len = 0;  // sig_len is unknown when the message is digested.
@@ -373,13 +374,14 @@ handle_arp_reply(
 
 		/* Save certificate. */
 		FILE *fp = fopen(fname, "w");
-		printf("opend a file\n");
 		if (!i2d_X509_fp(fp, cert)) {
 			printf("failed to save %s\n", fname);
 		}
 		fclose(fp);
 		free(cert);
-		printf("saved a cert (%u/%u) to %s\n", cah->cert_index, cah->cert_total_count, fname);
+		if (VERBOSE) {
+			printf("saved a cert (%u/%u) to %s\n", cah->cert_index, cah->cert_total_count, fname);
+		}
 
 		/* Check if all the certificates arrived. */
 		for (uint16_t index=0; index<cah->cert_total_count; ++index) {
@@ -443,9 +445,17 @@ handle_arp_reply(
 			printf("verification failed with code %d\n", retval);
 			return retval;
 		}
-
-		printf("successfully verified!\n");
+		if (VERBOSE) {
+			printf("successfully verified!\n");
+		}
 	}
+
+	char c_ip_addr[20], c_eth_addr[20];
+	format_ipv4_addr(ah->arp_data.arp_sip, c_ip_addr, 20);
+	rte_ether_format_addr(c_eth_addr, 20, &(ah->arp_data.arp_sha));
+	printf("ARP reply received:\n");
+	printf("- IP  = %s\n", c_ip_addr);
+	printf("- MAC = %s\n", c_eth_addr);
 	return 0;
 }
 
@@ -469,19 +479,23 @@ handle_arp_packet(
 	eh = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
 	offset += sizeof(struct rte_ether_hdr);
 	ah = rte_pktmbuf_mtod_offset(buf, struct rte_arp_hdr *, offset);
-	printf("arp_hardware: %x\n", rte_be_to_cpu_16(ah->arp_hardware));
-	printf("arp_protocol: %x\n", rte_be_to_cpu_16(ah->arp_protocol));
-	printf("arp_hlen: %d\n", ah->arp_hlen);
-	printf("arp_plen: %d\n", ah->arp_plen);
-	printf("arp_opcode: %x\n", rte_be_to_cpu_16(ah->arp_opcode));
+	if (VERBOSE) {
+		printf("arp_hardware: %x\n", rte_be_to_cpu_16(ah->arp_hardware));
+		printf("arp_protocol: %x\n", rte_be_to_cpu_16(ah->arp_protocol));
+		printf("arp_hlen: %d\n", ah->arp_hlen);
+		printf("arp_plen: %d\n", ah->arp_plen);
+		printf("arp_opcode: %x\n", rte_be_to_cpu_16(ah->arp_opcode));
+	}
 	
 	ad = &(ah->arp_data);
-	rte_ether_format_addr(csha, 20, &(ad->arp_sha));
-	printf("arp_sha: %s\n", csha);
-	printf("arp_sip: %08x\n", ad->arp_sip);
-	rte_ether_format_addr(ctha, 20, &(ad->arp_tha));
-	printf("arp_tha: %s\n", ctha);
-	printf("arp_tip: %08x\n", ad->arp_tip);
+	if (VERBOSE) {
+		rte_ether_format_addr(csha, 20, &(ad->arp_sha));
+		printf("arp_sha: %s\n", csha);
+		printf("arp_sip: %08x\n", ad->arp_sip);
+		rte_ether_format_addr(ctha, 20, &(ad->arp_tha));
+		printf("arp_tha: %s\n", ctha);
+		printf("arp_tip: %08x\n", ad->arp_tip);
+	}
 	
 	/* Send back an ARP reply message for ARP requests.
 		* See also: https://datatracker.ietf.org/doc/html/rfc826
@@ -649,13 +663,14 @@ lcore_main(struct rte_mempool *mbuf_pool)
 					}
 					if (!is_local) continue;
 				}
-				printf("\n%u packets received from %u.\n", nb_rx, port);
-				rte_ether_format_addr(caddr, 20, &(eh->src_addr));
-				printf("src: %s\n", caddr);
-				rte_ether_format_addr(caddr, 20, &(eh->dst_addr));
-				printf("dst: %s\n", caddr);
-				printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
-
+				if (VERBOSE) {
+					printf("\n%u packets received from %u.\n", nb_rx, port);
+					rte_ether_format_addr(caddr, 20, &(eh->src_addr));
+					printf("src: %s\n", caddr);
+					rte_ether_format_addr(caddr, 20, &(eh->dst_addr));
+					printf("dst: %s\n", caddr);
+					printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
+				}
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
 					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
 					if (retval != 0) {
