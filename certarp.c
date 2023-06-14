@@ -28,9 +28,10 @@
 #define IP_0 RTE_IPV4(88, 0, 174, 171)
 #define IP_1 RTE_IPV4(87, 0, 174, 171)
 
-#define MAX_CERT_COUNT 5
-#define CERT_COUNT 2
-#define CERT_PATHS {"rootCA.der", "domain-signed.der"}
+#define MAX_CERT_COUNT 1
+#define CERT_COUNT 1
+#define CERT_PATHS {"domain-signed.der"}
+#define ROOT_CERT_PATH "rootCA.der"
 
 #define KEY_PATH "domain.key"
 
@@ -431,6 +432,7 @@ handle_arp_packet(
 	struct rte_mbuf *buf,
 	uint32_t ip_addr,
 	struct rte_ether_addr *eth_addr,
+	X509 *root_cert,
 	X509 **certs,
 	const uint16_t cert_cnt,
 	RSA *rsa)
@@ -528,10 +530,19 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	const uint32_t ip_addr[2] = {IP_0, IP_1};
 	const char *cert_paths[CERT_COUNT] = CERT_PATHS;
 	X509 *certs[CERT_COUNT];
+	X509 *root_cert;
 	RSA *rsa;
 	FILE *fp;
 
 	/* Load certificates. */
+	fp = fopen(ROOT_CERT_PATH, "r");
+	if (!fp) {
+		printf("failed to load the root CA certificate: %s\n", ROOT_CERT_PATH);
+		return;
+	}
+	root_cert = d2i_X509_fp(fp, NULL);
+	fclose(fp);
+	printf("loaded the root CA certificate.\n");
 	for (int i; i<CERT_COUNT; ++i) {
 		fp = fopen(cert_paths[i], "r");
 		if (!fp) {
@@ -632,7 +643,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 				printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
 
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
+					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, root_cert, certs, CERT_COUNT, rsa);
 					if (retval != 0) {
 						printf("something is wrong: returned %d\n", retval);
 						continue;
