@@ -313,8 +313,16 @@ handle_arp_reply(
 		return 1;
 	}
 
+	/* Load signature and certificate. */
+	unsigned char *signature = (unsigned char *) malloc(cah->sig_len);
 	X509 *cert = (X509 *) malloc(cah->cert_len);
-	memcpy(cert, (X509 *) rte_pktmbuf_adj(buf, offset), cah->cert_len);
+	memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), cah->sig_len);
+	memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + cah->sig_len), cah->cert_len);
+	
+	printf("signature size: %u\n", cah->sig_len);
+	printf("cert size: %u\n", cah->cert_len);
+	printf("actual packet size: %u\n", buf->pkt_len);
+
 	
 	printf("cert size: %u\n", buf->pkt_len);
 	
