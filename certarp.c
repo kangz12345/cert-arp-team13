@@ -214,6 +214,7 @@ handle_arp_request(
 		cah->cert_index = cert_index;
 		cah->cert_total_count = cert_cnt;
 		cah->cert_len = i2d_X509(cert, NULL);
+		cah->sig_len = 0;
 
 		/* Digest message for signature. */
 		unsigned char *message = rte_pktmbuf_mtod_offset(
