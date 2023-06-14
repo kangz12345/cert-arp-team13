@@ -247,7 +247,6 @@ handle_arp_request(
 			return 1;
 		}
 		else {
-			sleep(1);
 			printf("transmitted back the ARP reply (%u/%u).\n", cert_index, cert_cnt);
 		}
 	}
