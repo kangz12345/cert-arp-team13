@@ -214,7 +214,14 @@ handle_arp_request(
 		cah->cert_index = cert_index;
 		cah->cert_total_count = cert_cnt;
 		cah->cert_len = i2d_X509(cert, NULL);
-		
+
+		/* Digest message for signature. */
+		unsigned char *message = rte_pktmbuf_mtod_offset(
+			new_buf, unsigned char *, sizeof(struct rte_ether_hdr));
+		size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+		unsigned char digest[SHA256_DIGEST_LENGTH];
+    	SHA256(message, message_len, digest);
+
 		cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
 		memcpy(cert_payload, cert, cah->cert_len);
 
