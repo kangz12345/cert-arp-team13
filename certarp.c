@@ -555,6 +555,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 		printf("failed to read the private key %s\n", KEY_PATH);
 		return;
 	}
+	printf("loaded private key.\n");
 	
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
