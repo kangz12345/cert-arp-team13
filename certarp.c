@@ -230,7 +230,7 @@ handle_arp_request(
 		if (result != 1) {
 			printf("failed to generate RSA signature.\n");
 			free(signature);
-			return;
+			return 1;
 		}
 		cah->sig_len = (uint32_t) signature_len;
 		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
@@ -293,6 +293,7 @@ handle_arp_reply(
 	struct rte_ether_addr *eth_addr,
 	uint32_t ip_addr)
 {
+	int retval;
 	uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 	struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
 	offset += sizeof(struct cert_arp_hdr);
@@ -406,7 +407,7 @@ handle_arp_reply(
 		fname[flen-4] = 0;
 		clen += sprintf(command + clen, "\"%s.crt\" ", fname);
 	}
-	int retval = system(command);
+	retval = system(command);
 	if (retval != 0) {
 		printf("verification failed with code %d\n", retval);
 		return retval;
