@@ -234,6 +234,7 @@ handle_arp_request(
 		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
 		free(signature);
 		
+		/* Append the certificate. */
 		cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
 		memcpy(cert_payload, cert, cah->cert_len);
 
