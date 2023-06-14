@@ -13,5 +13,5 @@ $ su root
 ```
 As `root` user, type:
 ```console
-# ./build/basicfwd
+# ./build/certarp
 ```
