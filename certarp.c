@@ -295,7 +295,7 @@ handle_arp_reply(
 	uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 	struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
 	offset += sizeof(struct cert_arp_hdr);
-	uint16_t cert_len = buf->pkt_len - offset;
+	uint16_t cert_len = buf->pkt_len - offset - cah->sig_len;
 	if (cert_len != cah->cert_len) {
 		printf("certificate length mismatch: %u (expected %u)\n", cert_len, cah->cert_len);
 		return 1;
