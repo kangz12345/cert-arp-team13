@@ -333,8 +333,14 @@ handle_arp_reply(
 	unsigned char digest[SHA256_DIGEST_LENGTH];
     SHA256(message, message_len, digest);
 
-	
-	printf("cert size: %u\n", buf->pkt_len);
+	/* Verify the signatrue. */
+	EVP_PKEY *pkey = X509_get_pubkey(cert);
+	RSA *rsa = EVP_PKEY_get1_RSA(pkey);
+	retval = RSA_verify(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, signature_len, rsa);
+    if (retval != 1) {
+        printf("RSA signature verification failed.\n");
+        return 1;
+    }
 	
 	/* File name of the certificate. */
 	char fname[16+18+6];  // ip + ' ' + eth + '_' + index + ".der"
