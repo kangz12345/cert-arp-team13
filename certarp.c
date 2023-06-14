@@ -39,6 +39,7 @@
 #define RTE_ARP_OP_CERT_REPLY 12
 
 #define VERBOSE false
+#define CERT_ARP true
 
 /* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
@@ -625,7 +626,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	}
 	_ad.arp_tha = addr;
 	_ad.arp_tip = ip_addr[1];
-	if (send_arp_request(0, &_ad, mbuf_pool, true)) {
+	if (send_arp_request(0, &_ad, mbuf_pool, CERT_ARP)) {
 		printf("failed to send an ARP request.\n");
 		return;
 	}
