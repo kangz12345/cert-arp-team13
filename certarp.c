@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2015 Intel Corporation
  */
 
+#include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -315,7 +316,8 @@ handle_arp_reply(
 	struct rte_ether_hdr *eh,
 	struct rte_arp_hdr *ah,
 	struct rte_ether_addr *eth_addr,
-	uint32_t ip_addr)
+	uint32_t ip_addr,
+	clock_t start_time)
 {
 	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY)) {
 		int retval;
@@ -451,6 +453,9 @@ handle_arp_reply(
 		}
 	}
 
+	clock_t end_time = clock();
+	printf("elapsed time: %fs\n", ((double) end_time - start_time) / CLOCKS_PER_SEC);
+
 	char c_ip_addr[20], c_eth_addr[20];
 	format_ipv4_addr(ah->arp_data.arp_sip, c_ip_addr, 20);
 	rte_ether_format_addr(c_eth_addr, 20, &(ah->arp_data.arp_sha));
@@ -469,7 +474,8 @@ handle_arp_packet(
 	struct rte_ether_addr *eth_addr,
 	X509 **certs,
 	const uint16_t cert_cnt,
-	RSA *rsa)
+	RSA *rsa,
+	clock_t start_time)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_arp_hdr *ah;
@@ -543,7 +549,7 @@ handle_arp_packet(
 		if (port != 0) {
 			printf("arp reply is received in port %u (expected 1).\n", port);
 		}
-		return handle_arp_reply(mbuf_pool, port, buf, eh, ah, &(ah->arp_data.arp_sha), ah->arp_data.arp_sip);
+		return handle_arp_reply(mbuf_pool, port, buf, eh, ah, &(ah->arp_data.arp_sha), ah->arp_data.arp_sip, start_time);
 	}
 }
 
@@ -570,6 +576,9 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	X509 *certs[CERT_COUNT];
 	RSA *rsa;
 	FILE *fp;
+	clock_t start_time;
+
+	printf("VERBOSE=%d, CERT_ARP=%d\n", VERBOSE, CERT_ARP);
 
 	/* Load certificates. */
 	for (int i; i<CERT_COUNT; ++i) {
@@ -630,6 +639,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 		printf("failed to send an ARP request.\n");
 		return;
 	}
+	start_time = clock();
 
 	for (;;) {
 		RTE_ETH_FOREACH_DEV(port) {
@@ -673,7 +683,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 					printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
 				}
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
+					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa, start_time);
 					if (retval != 0) {
 						printf("something is wrong: returned %d\n", retval);
 						continue;
