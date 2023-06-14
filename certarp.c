@@ -209,7 +209,14 @@ handle_arp_request(
 
 	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
 		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
-		
+		const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &buf, 1);
+		if (unlikely(nb_tx < 1)) {
+			printf("failed to transmit the vanilla reply packet.\n");
+			return 1;
+		}
+		else {
+			printf("transmitted back the vanilla ARP reply.\n");
+		}
 	}
 	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REQUEST)) {
 		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY);
