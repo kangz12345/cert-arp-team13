@@ -222,6 +222,18 @@ handle_arp_request(
 		unsigned char digest[SHA256_DIGEST_LENGTH];
     	SHA256(message, message_len, digest);
 
+		/* Append the signature. */
+		unsigned char *signature = (unsigned char *) malloc(RSA_size(rsa));
+		unsigned int signature_len = 0;
+		int result = RSA_sign(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, &signature_len, rsa);
+		if (result != 1) {
+			printf("failed to generate RSA signature.\n");
+			free(signature);
+			return;
+		}
+		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
+		free(signature);
+		
 		cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
 		memcpy(cert_payload, cert, cah->cert_len);
 
