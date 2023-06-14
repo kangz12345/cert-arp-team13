@@ -231,6 +231,7 @@ handle_arp_request(
 			free(signature);
 			return;
 		}
+		cah->sig_len = (uint32_t) signature_len;
 		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
 		free(signature);
 		
