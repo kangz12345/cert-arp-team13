@@ -184,7 +184,8 @@ handle_arp_request(
 	struct rte_ether_addr *eth_addr,
 	uint32_t ip_addr,
 	X509 **certs,  // DER certificates
-	const uint16_t cert_cnt)
+	const uint16_t cert_cnt,
+	RSA *rsa)
 {
 	struct rte_arp_ipv4 *ad = &(ah->arp_data);
 	/* Prepare the ARP reply packet. */
@@ -386,7 +387,8 @@ handle_arp_packet(
 	uint32_t ip_addr,
 	struct rte_ether_addr *eth_addr,
 	X509 **certs,
-	const uint16_t cert_cnt)
+	const uint16_t cert_cnt,
+	RSA *rsa)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_arp_hdr *ah;
@@ -450,7 +452,7 @@ handle_arp_packet(
 			printf("arp request is received in port %u (expected 0).\n", port);
 			return 0;
 		}
-		return handle_arp_request(mbuf_pool, port, buf, eh, ah, eth_addr, ip_addr, certs, cert_cnt);
+		return handle_arp_request(mbuf_pool, port, buf, eh, ah, eth_addr, ip_addr, certs, cert_cnt, rsa);
 	}
 	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
 		if (port != 0) {
@@ -584,7 +586,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 				printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
 
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT);
+					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
 					if (retval != 0) {
 						printf("something is wrong: returned %d\n", retval);
 						continue;
