@@ -37,6 +37,7 @@ struct cert_arp_hdr {
 	uint16_t cert_index;
 	uint16_t cert_total_count;
 	uint16_t cert_len;
+	uint32_t sig_len;
 };
 
 /*
