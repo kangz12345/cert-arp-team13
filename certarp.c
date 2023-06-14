@@ -30,7 +30,7 @@
 #define CERT_COUNT 2
 #define CERT_PATHS {"rootCA.der", "domain-signed.der"}
 
-/* basicfwd.c: Modified from the basic DPDK skeleton forwarding example. */
+/* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
 /* Custom ARP with certificates header. */
 struct cert_arp_hdr {
