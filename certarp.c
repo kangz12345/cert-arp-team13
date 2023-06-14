@@ -408,7 +408,7 @@ handle_arp_reply(
 	}
 
 	/* Verify the certificates. */
-	int clen = sprintf(command, "openssl verify -CAfile ");
+	int clen = sprintf(command, "openssl verify -CAfile \"%s\" ", ROOT_CERT_PATH);
 	for (uint16_t index=0; index<cah->cert_total_count; ++index) {
 		int flen = get_fname(fname, ip_addr, eth_addr, index);
 		fname[flen-4] = 0;
