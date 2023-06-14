@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2015 Intel Corporation
  */
 
+#include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -34,6 +35,12 @@
 #define ROOT_CERT_PATH "rootCA.crt"
 
 #define KEY_PATH "domain.key"
+
+#define RTE_ARP_OP_CERT_REQUEST 11
+#define RTE_ARP_OP_CERT_REPLY 12
+
+#define VERBOSE false
+#define CERT_ARP true
 
 /* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
@@ -134,7 +141,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 
 static inline int
-send_arp_request(uint16_t port, struct rte_arp_ipv4 *arp_data, struct rte_mempool *mbuf_pool)
+send_arp_request(uint16_t port, struct rte_arp_ipv4 *arp_data, struct rte_mempool *mbuf_pool, bool cert)
 {
 	struct rte_arp_hdr *ah;
 	struct rte_arp_ipv4 *ad;
@@ -150,7 +157,12 @@ send_arp_request(uint16_t port, struct rte_arp_ipv4 *arp_data, struct rte_mempoo
 	ah->arp_protocol = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	ah->arp_hlen = RTE_ETHER_ADDR_LEN;
 	ah->arp_plen = sizeof(uint32_t);
-	ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REQUEST);
+	if (cert) {
+		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_CERT_REQUEST);
+	}
+	else {
+		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REQUEST);
+	}
 	ah->arp_data = *arp_data;
 	eh = (struct rte_ether_hdr *) rte_pktmbuf_prepend(bf, (uint16_t) sizeof(struct rte_ether_hdr));
 	eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
@@ -161,10 +173,10 @@ send_arp_request(uint16_t port, struct rte_arp_ipv4 *arp_data, struct rte_mempoo
 		printf("\nfailed to transmit the request packet.\n");
 		return 1;
 	}
-	else {
+	else if (VERBOSE) {
 		printf("\ntransmitted the ARP request.\n");
-		return 0;
 	}
+	return 0;
 }
 
 static inline void
@@ -194,60 +206,73 @@ handle_arp_request(
 	ad->arp_tip = ad->arp_sip;
 	rte_ether_addr_copy(eth_addr, &(ad->arp_sha));
 	ad->arp_sip = ip_addr;
-	ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
 
-	/* Prepend the ethernet header and trim the payload. */
+	/* Prepare the Ethernet header. */
 	rte_ether_addr_copy(eth_addr, &(eh->src_addr));
 	rte_ether_addr_copy(&(ad->arp_tha), &(eh->dst_addr));
-	uint16_t trim_len = buf->pkt_len - sizeof(struct rte_arp_hdr) - sizeof(struct rte_ether_hdr);
-	rte_pktmbuf_trim(buf, trim_len);
 
-	for (uint16_t cert_index=0; cert_index<cert_cnt; ++cert_index) {
-		struct rte_mbuf *new_buf = rte_pktmbuf_clone(buf, mbuf_pool);
-		if (unlikely(new_buf == NULL)) {
-			printf("failed to clone an mbuf.\n");
-			return 1;
-		}
-		X509 *cert_payload;
-		X509 *cert = certs[cert_index];
-		struct cert_arp_hdr *cah = (struct cert_arp_hdr *)
-			rte_pktmbuf_append(new_buf, (uint16_t) sizeof(struct cert_arp_hdr));
-		cah->cert_index = cert_index;
-		cah->cert_total_count = cert_cnt;
-		cah->cert_len = i2d_X509(cert, NULL);
-		cah->sig_len = 0;
-
-		/* Digest message for signature. */
-		unsigned char *message = rte_pktmbuf_mtod_offset(
-			new_buf, unsigned char *, sizeof(struct rte_ether_hdr));
-		size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
-		unsigned char digest[SHA256_DIGEST_LENGTH];
-    	SHA256(message, message_len, digest);
-
-		/* Append the signature. */
-		unsigned char *signature = (unsigned char *) malloc(RSA_size(rsa));
-		unsigned int signature_len = 0;
-		int result = RSA_sign(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, &signature_len, rsa);
-		if (result != 1) {
-			printf("failed to generate RSA signature.\n");
-			free(signature);
-			return 1;
-		}
-		cah->sig_len = (uint32_t) signature_len;
-		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
-		free(signature);
-		
-		/* Append the certificate. */
-		cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
-		memcpy(cert_payload, cert, cah->cert_len);
-
-		const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &new_buf, 1);
+	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
+		const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &buf, 1);
 		if (unlikely(nb_tx < 1)) {
-			printf("failed to transmit the %u-th reply packet.\n", cert_index);
+			printf("failed to transmit the vanilla reply packet.\n");
 			return 1;
 		}
-		else {
-			printf("transmitted back the ARP reply (%u/%u).\n", cert_index, cert_cnt);
+		else if (VERBOSE) {
+			printf("transmitted back the vanilla ARP reply.\n");
+		}
+	}
+	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REQUEST)) {
+		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY);
+		uint16_t trim_len = buf->pkt_len - sizeof(struct rte_arp_hdr) - sizeof(struct rte_ether_hdr);
+		rte_pktmbuf_trim(buf, trim_len);
+		for (uint16_t cert_index=0; cert_index<cert_cnt; ++cert_index) {
+			struct rte_mbuf *new_buf = rte_pktmbuf_clone(buf, mbuf_pool);
+			if (unlikely(new_buf == NULL)) {
+				printf("failed to clone an mbuf.\n");
+				return 1;
+			}
+			X509 *cert_payload;
+			X509 *cert = certs[cert_index];
+			struct cert_arp_hdr *cah = (struct cert_arp_hdr *)
+				rte_pktmbuf_append(new_buf, (uint16_t) sizeof(struct cert_arp_hdr));
+			cah->cert_index = cert_index;
+			cah->cert_total_count = cert_cnt;
+			cah->cert_len = i2d_X509(cert, NULL);
+			cah->sig_len = 0;
+
+			/* Digest message for signature. */
+			unsigned char *message = rte_pktmbuf_mtod_offset(
+				new_buf, unsigned char *, sizeof(struct rte_ether_hdr));
+			size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+			unsigned char digest[SHA256_DIGEST_LENGTH];
+			SHA256(message, message_len, digest);
+
+			/* Append the signature. */
+			unsigned char *signature = (unsigned char *) malloc(RSA_size(rsa));
+			unsigned int signature_len = 0;
+			int result = RSA_sign(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, &signature_len, rsa);
+			if (result != 1) {
+				printf("failed to generate RSA signature.\n");
+				free(signature);
+				return 1;
+			}
+			cah->sig_len = (uint32_t) signature_len;
+			memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
+			free(signature);
+			
+			/* Append the certificate. */
+			cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
+			memcpy(cert_payload, cert, cah->cert_len);
+
+			const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &new_buf, 1);
+			if (unlikely(nb_tx < 1)) {
+				printf("failed to transmit the %u-th reply packet.\n", cert_index);
+				return 1;
+			}
+			else if (VERBOSE) {
+				printf("transmitted back the ARP reply (%u/%u).\n", cert_index, cert_cnt);
+			}
 		}
 	}
 	return 0;
@@ -291,136 +316,152 @@ handle_arp_reply(
 	struct rte_ether_hdr *eh,
 	struct rte_arp_hdr *ah,
 	struct rte_ether_addr *eth_addr,
-	uint32_t ip_addr)
+	uint32_t ip_addr,
+	clock_t start_time)
 {
-	int retval;
-	uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
-	struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
-	offset += sizeof(struct cert_arp_hdr);
-	uint16_t cert_len = buf->pkt_len - offset - cah->sig_len;
-	if (cert_len != cah->cert_len) {
-		printf("certificate length mismatch: %u (expected %u)\n", cert_len, cah->cert_len);
-		return 1;
-	}
-	if (cah->cert_total_count > MAX_CERT_COUNT) {
-		printf("certificate total count %u is greater than the maximum (%u)\n", cah->cert_total_count, MAX_CERT_COUNT);
-		return 1;
-	}
-	if (cah->cert_total_count != CERT_COUNT) {
-		printf("inconsistent cert_total_count: %u (expected=%u)\n", cah->cert_total_count, CERT_COUNT);
-		return 1;
-	}
-	if (cah->cert_index >= cah->cert_total_count) {
-		printf("invalid cert_index: %u (total=%u)\n", cah->cert_index, cah->cert_total_count);
-		return 1;
-	}
-
-	/* Load signature and certificate. */
-	unsigned char *signature = (unsigned char *) malloc(cah->sig_len);
-	size_t signature_len = (size_t) cah->sig_len;
-	X509 *cert = (X509 *) malloc(cah->cert_len);
-	memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), signature_len);
-	memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + signature_len), cah->cert_len);
-	
-	printf("signature size: %u\n", cah->sig_len);
-	printf("cert size: %u\n", cah->cert_len);
-	printf("actual packet size: %u\n", buf->pkt_len);
-
-	/* Digest message. */
-	cah->sig_len = 0;  // sig_len is unknown when the message is digested.
-	unsigned char *message = rte_pktmbuf_mtod_offset(buf, unsigned char *, sizeof(struct rte_ether_hdr));
-	size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
-	unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(message, message_len, digest);
-
-	/* Verify the signatrue. */
-	EVP_PKEY *pkey = X509_get_pubkey(cert);
-	RSA *rsa = EVP_PKEY_get1_RSA(pkey);
-	retval = RSA_verify(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, signature_len, rsa);
-    if (retval != 1) {
-        printf("RSA signature verification failed.\n");
-        return 1;
-    }
-	
-	/* File name of the certificate. */
-	char fname[16+18+6];  // ip + ' ' + eth + '_' + index + ".der"
-	get_fname(fname, ip_addr, eth_addr, cah->cert_index);
-
-	/* Save certificate. */
-	FILE *fp = fopen(fname, "w");
-	printf("opend a file\n");
-	if (!i2d_X509_fp(fp, cert)) {
-		printf("failed to save %s\n", fname);
-	}
-	fclose(fp);
-	free(cert);
-	printf("saved a cert (%u/%u) to %s\n", cah->cert_index, cah->cert_total_count, fname);
-
-	/* Check if all the certificates arrived. */
-	for (uint16_t index=0; index<cah->cert_total_count; ++index) {
-		get_fname(fname, ip_addr, eth_addr, index);
-		if (access(fname, F_OK) != 0) {
-			printf("%s is missing\n", fname);
-			return 0;
-		}
-	}
-
-	/* Verify ip-eth address in the certificate. */
-	char command[100], result[100];
-	get_fname(fname, ip_addr, eth_addr, cah->cert_total_count - 1);
-	sprintf(command, "openssl x509 -noout -subject -in \"%s\"", fname);
-	fp = popen(command, "r");
-	fgets(result, 100, fp);  // subject=CN = xxx.xxx.xxx.xxx xx:xx:xx:xx:xx:xx
-	pclose(fp);
-	uint32_t n[4] = {0, 0, 0, 0}, j=0, cert_ip;
-	struct rte_ether_addr cert_eth;
-	int i;
-	for (i=13; i<100; i++) {
-		if (result[i] == '.') {
-			j += 1;
-		}
-		else if (result[i] == ' ') {
-			cert_ip = RTE_IPV4(n[3], n[2], n[1], n[0]);
-			break;
-		}
-		else {
-			n[j] *= 10;
-			n[j] += result[i] - '0';
-		}
-	}
-	rte_ether_unformat_addr(result+i+1, &cert_eth);
-	if (cert_ip != ip_addr || !rte_is_same_ether_addr(eth_addr, &cert_eth)) {
-		printf("ip and ethernet address pairs do not match.\n");
-		return 1;
-	}
-
-	/* Convert the certificates to PEM. */
-	for (uint16_t index=0; index<cah->cert_total_count; ++index) {
-		int flen = get_fname(fname, ip_addr, eth_addr, index);
-		int clen = sprintf(command, "openssl x509 -in \"%s\" -inform DER -out ", fname);
-		fname[flen-4] = 0;
-		sprintf(command + clen, "\"%s.crt\"", fname);
-		if (system(command)) {
-			printf("certificate conversion failed.\n");
+	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY)) {
+		int retval;
+		uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
+		struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
+		offset += sizeof(struct cert_arp_hdr);
+		uint16_t cert_len = buf->pkt_len - offset - cah->sig_len;
+		if (cert_len != cah->cert_len) {
+			printf("certificate length mismatch: %u (expected %u)\n", cert_len, cah->cert_len);
 			return 1;
 		}
+		if (cah->cert_total_count > MAX_CERT_COUNT) {
+			printf("certificate total count %u is greater than the maximum (%u)\n", cah->cert_total_count, MAX_CERT_COUNT);
+			return 1;
+		}
+		if (cah->cert_total_count != CERT_COUNT) {
+			printf("inconsistent cert_total_count: %u (expected=%u)\n", cah->cert_total_count, CERT_COUNT);
+			return 1;
+		}
+		if (cah->cert_index >= cah->cert_total_count) {
+			printf("invalid cert_index: %u (total=%u)\n", cah->cert_index, cah->cert_total_count);
+			return 1;
+		}
+
+		/* Load signature and certificate. */
+		unsigned char *signature = (unsigned char *) malloc(cah->sig_len);
+		size_t signature_len = (size_t) cah->sig_len;
+		X509 *cert = (X509 *) malloc(cah->cert_len);
+		memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), signature_len);
+		memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + signature_len), cah->cert_len);
+		
+		if (VERBOSE) {
+			printf("signature size: %u\n", cah->sig_len);
+			printf("cert size: %u\n", cah->cert_len);
+			printf("actual packet size: %u\n", buf->pkt_len);
+		}
+
+		/* Digest message. */
+		cah->sig_len = 0;  // sig_len is unknown when the message is digested.
+		unsigned char *message = rte_pktmbuf_mtod_offset(buf, unsigned char *, sizeof(struct rte_ether_hdr));
+		size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+		unsigned char digest[SHA256_DIGEST_LENGTH];
+		SHA256(message, message_len, digest);
+
+		/* Verify the signatrue. */
+		EVP_PKEY *pkey = X509_get_pubkey(cert);
+		RSA *rsa = EVP_PKEY_get1_RSA(pkey);
+		retval = RSA_verify(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, signature_len, rsa);
+		if (retval != 1) {
+			printf("RSA signature verification failed.\n");
+			return 1;
+		}
+		
+		/* File name of the certificate. */
+		char fname[16+18+6];  // ip + ' ' + eth + '_' + index + ".der"
+		get_fname(fname, ip_addr, eth_addr, cah->cert_index);
+
+		/* Save certificate. */
+		FILE *fp = fopen(fname, "w");
+		if (!i2d_X509_fp(fp, cert)) {
+			printf("failed to save %s\n", fname);
+		}
+		fclose(fp);
+		free(cert);
+		if (VERBOSE) {
+			printf("saved a cert (%u/%u) to %s\n", cah->cert_index, cah->cert_total_count, fname);
+		}
+
+		/* Check if all the certificates arrived. */
+		for (uint16_t index=0; index<cah->cert_total_count; ++index) {
+			get_fname(fname, ip_addr, eth_addr, index);
+			if (access(fname, F_OK) != 0) {
+				printf("%s is missing\n", fname);
+				return 0;
+			}
+		}
+
+		/* Verify ip-eth address in the certificate. */
+		char command[100], result[100];
+		get_fname(fname, ip_addr, eth_addr, cah->cert_total_count - 1);
+		sprintf(command, "openssl x509 -noout -subject -in \"%s\"", fname);
+		fp = popen(command, "r");
+		fgets(result, 100, fp);  // subject=CN = xxx.xxx.xxx.xxx xx:xx:xx:xx:xx:xx
+		pclose(fp);
+		uint32_t n[4] = {0, 0, 0, 0}, j=0, cert_ip;
+		struct rte_ether_addr cert_eth;
+		int i;
+		for (i=13; i<100; i++) {
+			if (result[i] == '.') {
+				j += 1;
+			}
+			else if (result[i] == ' ') {
+				cert_ip = RTE_IPV4(n[3], n[2], n[1], n[0]);
+				break;
+			}
+			else {
+				n[j] *= 10;
+				n[j] += result[i] - '0';
+			}
+		}
+		rte_ether_unformat_addr(result+i+1, &cert_eth);
+		if (cert_ip != ip_addr || !rte_is_same_ether_addr(eth_addr, &cert_eth)) {
+			printf("ip and ethernet address pairs do not match.\n");
+			return 1;
+		}
+
+		/* Convert the certificates to PEM. */
+		for (uint16_t index=0; index<cah->cert_total_count; ++index) {
+			int flen = get_fname(fname, ip_addr, eth_addr, index);
+			int clen = sprintf(command, "openssl x509 -in \"%s\" -inform DER -out ", fname);
+			fname[flen-4] = 0;
+			sprintf(command + clen, "\"%s.crt\"", fname);
+			if (system(command)) {
+				printf("certificate conversion failed.\n");
+				return 1;
+			}
+		}
+
+		/* Verify the certificates. */
+		int clen = sprintf(command, "openssl verify -CAfile \"%s\" ", ROOT_CERT_PATH);
+		for (uint16_t index=0; index<cah->cert_total_count; ++index) {
+			int flen = get_fname(fname, ip_addr, eth_addr, index);
+			fname[flen-4] = 0;
+			clen += sprintf(command + clen, "\"%s.crt\" ", fname);
+		}
+		retval = system(command);
+		if (retval != 0) {
+			printf("verification failed with code %d\n", retval);
+			return retval;
+		}
+		if (VERBOSE) {
+			printf("successfully verified!\n");
+		}
 	}
 
-	/* Verify the certificates. */
-	int clen = sprintf(command, "openssl verify -CAfile \"%s\" ", ROOT_CERT_PATH);
-	for (uint16_t index=0; index<cah->cert_total_count; ++index) {
-		int flen = get_fname(fname, ip_addr, eth_addr, index);
-		fname[flen-4] = 0;
-		clen += sprintf(command + clen, "\"%s.crt\" ", fname);
-	}
-	retval = system(command);
-	if (retval != 0) {
-		printf("verification failed with code %d\n", retval);
-		return retval;
-	}
+	clock_t end_time = clock();
+	printf("elapsed time: %fs\n", ((double) end_time - start_time) / CLOCKS_PER_SEC);
 
-	printf("successfully verified!\n");
-	
+	char c_ip_addr[20], c_eth_addr[20];
+	format_ipv4_addr(ah->arp_data.arp_sip, c_ip_addr, 20);
+	rte_ether_format_addr(c_eth_addr, 20, &(ah->arp_data.arp_sha));
+	printf("ARP reply received:\n");
+	printf("- IP  = %s\n", c_ip_addr);
+	printf("- MAC = %s\n", c_eth_addr);
 	return 0;
 }
 
@@ -433,7 +474,8 @@ handle_arp_packet(
 	struct rte_ether_addr *eth_addr,
 	X509 **certs,
 	const uint16_t cert_cnt,
-	RSA *rsa)
+	RSA *rsa,
+	clock_t start_time)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_arp_hdr *ah;
@@ -444,19 +486,23 @@ handle_arp_packet(
 	eh = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
 	offset += sizeof(struct rte_ether_hdr);
 	ah = rte_pktmbuf_mtod_offset(buf, struct rte_arp_hdr *, offset);
-	printf("arp_hardware: %x\n", rte_be_to_cpu_16(ah->arp_hardware));
-	printf("arp_protocol: %x\n", rte_be_to_cpu_16(ah->arp_protocol));
-	printf("arp_hlen: %d\n", ah->arp_hlen);
-	printf("arp_plen: %d\n", ah->arp_plen);
-	printf("arp_opcode: %x\n", rte_be_to_cpu_16(ah->arp_opcode));
+	if (VERBOSE) {
+		printf("arp_hardware: %x\n", rte_be_to_cpu_16(ah->arp_hardware));
+		printf("arp_protocol: %x\n", rte_be_to_cpu_16(ah->arp_protocol));
+		printf("arp_hlen: %d\n", ah->arp_hlen);
+		printf("arp_plen: %d\n", ah->arp_plen);
+		printf("arp_opcode: %x\n", rte_be_to_cpu_16(ah->arp_opcode));
+	}
 	
 	ad = &(ah->arp_data);
-	rte_ether_format_addr(csha, 20, &(ad->arp_sha));
-	printf("arp_sha: %s\n", csha);
-	printf("arp_sip: %08x\n", ad->arp_sip);
-	rte_ether_format_addr(ctha, 20, &(ad->arp_tha));
-	printf("arp_tha: %s\n", ctha);
-	printf("arp_tip: %08x\n", ad->arp_tip);
+	if (VERBOSE) {
+		rte_ether_format_addr(csha, 20, &(ad->arp_sha));
+		printf("arp_sha: %s\n", csha);
+		printf("arp_sip: %08x\n", ad->arp_sip);
+		rte_ether_format_addr(ctha, 20, &(ad->arp_tha));
+		printf("arp_tha: %s\n", ctha);
+		printf("arp_tip: %08x\n", ad->arp_tip);
+	}
 	
 	/* Send back an ARP reply message for ARP requests.
 		* See also: https://datatracker.ietf.org/doc/html/rfc826
@@ -492,18 +538,18 @@ handle_arp_packet(
 	// }
 	// printf("\n");
 
-	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+	if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REQUEST) || ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
 		if (port != 1) {
-			printf("arp request is received in port %u (expected 0).\n", port);
+			printf("cert arp request is received in port %u (expected 0).\n", port);
 			return 0;
 		}
 		return handle_arp_request(mbuf_pool, port, buf, eh, ah, eth_addr, ip_addr, certs, cert_cnt, rsa);
 	}
-	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_CERT_REPLY) || ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
 		if (port != 0) {
 			printf("arp reply is received in port %u (expected 1).\n", port);
 		}
-		return handle_arp_reply(mbuf_pool, port, buf, eh, ah, &(ah->arp_data.arp_sha), ah->arp_data.arp_sip);
+		return handle_arp_reply(mbuf_pool, port, buf, eh, ah, &(ah->arp_data.arp_sha), ah->arp_data.arp_sip, start_time);
 	}
 }
 
@@ -530,6 +576,9 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	X509 *certs[CERT_COUNT];
 	RSA *rsa;
 	FILE *fp;
+	clock_t start_time;
+
+	printf("VERBOSE=%d, CERT_ARP=%d\n", VERBOSE, CERT_ARP);
 
 	/* Load certificates. */
 	for (int i; i<CERT_COUNT; ++i) {
@@ -586,10 +635,11 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	}
 	_ad.arp_tha = addr;
 	_ad.arp_tip = ip_addr[1];
-	if (send_arp_request(0, &_ad, mbuf_pool)) {
+	if (send_arp_request(0, &_ad, mbuf_pool, CERT_ARP)) {
 		printf("failed to send an ARP request.\n");
 		return;
 	}
+	start_time = clock();
 
 	for (;;) {
 		RTE_ETH_FOREACH_DEV(port) {
@@ -624,15 +674,16 @@ lcore_main(struct rte_mempool *mbuf_pool)
 					}
 					if (!is_local) continue;
 				}
-				printf("\n%u packets received from %u.\n", nb_rx, port);
-				rte_ether_format_addr(caddr, 20, &(eh->src_addr));
-				printf("src: %s\n", caddr);
-				rte_ether_format_addr(caddr, 20, &(eh->dst_addr));
-				printf("dst: %s\n", caddr);
-				printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
-
+				if (VERBOSE) {
+					printf("\n%u packets received from %u.\n", nb_rx, port);
+					rte_ether_format_addr(caddr, 20, &(eh->src_addr));
+					printf("src: %s\n", caddr);
+					rte_ether_format_addr(caddr, 20, &(eh->dst_addr));
+					printf("dst: %s\n", caddr);
+					printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
+				}
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
+					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa, start_time);
 					if (retval != 0) {
 						printf("something is wrong: returned %d\n", retval);
 						continue;
