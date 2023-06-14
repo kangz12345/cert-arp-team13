@@ -15,6 +15,8 @@
 #include <rte_mbuf.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/sha.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -26,9 +28,12 @@
 #define IP_0 RTE_IPV4(88, 0, 174, 171)
 #define IP_1 RTE_IPV4(87, 0, 174, 171)
 
-#define MAX_CERT_COUNT 5
-#define CERT_COUNT 2
-#define CERT_PATHS {"rootCA.der", "domain-signed.der"}
+#define MAX_CERT_COUNT 1
+#define CERT_COUNT 1
+#define CERT_PATHS {"domain-signed.der"}
+#define ROOT_CERT_PATH "rootCA.crt"
+
+#define KEY_PATH "domain.key"
 
 /* certarp.c: Modified from the basic DPDK skeleton forwarding example. */
 
@@ -37,6 +42,7 @@ struct cert_arp_hdr {
 	uint16_t cert_index;
 	uint16_t cert_total_count;
 	uint16_t cert_len;
+	uint32_t sig_len;
 };
 
 /*
@@ -179,7 +185,8 @@ handle_arp_request(
 	struct rte_ether_addr *eth_addr,
 	uint32_t ip_addr,
 	X509 **certs,  // DER certificates
-	const uint16_t cert_cnt)
+	const uint16_t cert_cnt,
+	RSA *rsa)
 {
 	struct rte_arp_ipv4 *ad = &(ah->arp_data);
 	/* Prepare the ARP reply packet. */
@@ -208,7 +215,29 @@ handle_arp_request(
 		cah->cert_index = cert_index;
 		cah->cert_total_count = cert_cnt;
 		cah->cert_len = i2d_X509(cert, NULL);
+		cah->sig_len = 0;
+
+		/* Digest message for signature. */
+		unsigned char *message = rte_pktmbuf_mtod_offset(
+			new_buf, unsigned char *, sizeof(struct rte_ether_hdr));
+		size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+		unsigned char digest[SHA256_DIGEST_LENGTH];
+    	SHA256(message, message_len, digest);
+
+		/* Append the signature. */
+		unsigned char *signature = (unsigned char *) malloc(RSA_size(rsa));
+		unsigned int signature_len = 0;
+		int result = RSA_sign(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, &signature_len, rsa);
+		if (result != 1) {
+			printf("failed to generate RSA signature.\n");
+			free(signature);
+			return 1;
+		}
+		cah->sig_len = (uint32_t) signature_len;
+		memcpy((unsigned char *) rte_pktmbuf_append(new_buf, (uint16_t) signature_len), signature, signature_len);
+		free(signature);
 		
+		/* Append the certificate. */
 		cert_payload = (X509 *) rte_pktmbuf_append(new_buf, cah->cert_len);
 		memcpy(cert_payload, cert, cah->cert_len);
 
@@ -218,7 +247,6 @@ handle_arp_request(
 			return 1;
 		}
 		else {
-			sleep(1);
 			printf("transmitted back the ARP reply (%u/%u).\n", cert_index, cert_cnt);
 		}
 	}
@@ -265,10 +293,11 @@ handle_arp_reply(
 	struct rte_ether_addr *eth_addr,
 	uint32_t ip_addr)
 {
+	int retval;
 	uint16_t offset = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 	struct cert_arp_hdr *cah = rte_pktmbuf_mtod_offset(buf, struct cert_arp_hdr *, offset);
 	offset += sizeof(struct cert_arp_hdr);
-	uint16_t cert_len = buf->pkt_len - offset;
+	uint16_t cert_len = buf->pkt_len - offset - cah->sig_len;
 	if (cert_len != cah->cert_len) {
 		printf("certificate length mismatch: %u (expected %u)\n", cert_len, cah->cert_len);
 		return 1;
@@ -286,10 +315,32 @@ handle_arp_reply(
 		return 1;
 	}
 
+	/* Load signature and certificate. */
+	unsigned char *signature = (unsigned char *) malloc(cah->sig_len);
+	size_t signature_len = (size_t) cah->sig_len;
 	X509 *cert = (X509 *) malloc(cah->cert_len);
-	memcpy(cert, (X509 *) rte_pktmbuf_adj(buf, offset), cah->cert_len);
+	memcpy(signature, rte_pktmbuf_mtod_offset(buf, void *, offset), signature_len);
+	memcpy(cert, rte_pktmbuf_mtod_offset(buf, void *, offset + signature_len), cah->cert_len);
 	
-	printf("cert size: %u\n", buf->pkt_len);
+	printf("signature size: %u\n", cah->sig_len);
+	printf("cert size: %u\n", cah->cert_len);
+	printf("actual packet size: %u\n", buf->pkt_len);
+
+	/* Digest message. */
+	cah->sig_len = 0;  // sig_len is unknown when the message is digested.
+	unsigned char *message = rte_pktmbuf_mtod_offset(buf, unsigned char *, sizeof(struct rte_ether_hdr));
+	size_t message_len = sizeof(struct rte_arp_hdr) + sizeof(struct cert_arp_hdr);
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(message, message_len, digest);
+
+	/* Verify the signatrue. */
+	EVP_PKEY *pkey = X509_get_pubkey(cert);
+	RSA *rsa = EVP_PKEY_get1_RSA(pkey);
+	retval = RSA_verify(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, signature_len, rsa);
+    if (retval != 1) {
+        printf("RSA signature verification failed.\n");
+        return 1;
+    }
 	
 	/* File name of the certificate. */
 	char fname[16+18+6];  // ip + ' ' + eth + '_' + index + ".der"
@@ -356,13 +407,13 @@ handle_arp_reply(
 	}
 
 	/* Verify the certificates. */
-	int clen = sprintf(command, "openssl verify -CAfile ");
+	int clen = sprintf(command, "openssl verify -CAfile \"%s\" ", ROOT_CERT_PATH);
 	for (uint16_t index=0; index<cah->cert_total_count; ++index) {
 		int flen = get_fname(fname, ip_addr, eth_addr, index);
 		fname[flen-4] = 0;
 		clen += sprintf(command + clen, "\"%s.crt\" ", fname);
 	}
-	int retval = system(command);
+	retval = system(command);
 	if (retval != 0) {
 		printf("verification failed with code %d\n", retval);
 		return retval;
@@ -381,7 +432,8 @@ handle_arp_packet(
 	uint32_t ip_addr,
 	struct rte_ether_addr *eth_addr,
 	X509 **certs,
-	const uint16_t cert_cnt)
+	const uint16_t cert_cnt,
+	RSA *rsa)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_arp_hdr *ah;
@@ -445,7 +497,7 @@ handle_arp_packet(
 			printf("arp request is received in port %u (expected 0).\n", port);
 			return 0;
 		}
-		return handle_arp_request(mbuf_pool, port, buf, eh, ah, eth_addr, ip_addr, certs, cert_cnt);
+		return handle_arp_request(mbuf_pool, port, buf, eh, ah, eth_addr, ip_addr, certs, cert_cnt, rsa);
 	}
 	else if (ah->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
 		if (port != 0) {
@@ -476,10 +528,12 @@ lcore_main(struct rte_mempool *mbuf_pool)
 	const uint32_t ip_addr[2] = {IP_0, IP_1};
 	const char *cert_paths[CERT_COUNT] = CERT_PATHS;
 	X509 *certs[CERT_COUNT];
+	RSA *rsa;
+	FILE *fp;
 
 	/* Load certificates. */
 	for (int i; i<CERT_COUNT; ++i) {
-		FILE *fp = fopen(cert_paths[i], "r");
+		fp = fopen(cert_paths[i], "r");
 		if (!fp) {
 			printf("failed to load a certificate: %s\n", cert_paths[i]);
 			return;
@@ -488,6 +542,20 @@ lcore_main(struct rte_mempool *mbuf_pool)
 		fclose(fp);
 	}
 	printf("loaded %u certificates.\n", CERT_COUNT);
+
+	/* Load the private key. */
+	fp = fopen(KEY_PATH, "r");
+	if (!fp) {
+		printf("failed to open the private key %s\n", KEY_PATH);
+		return;
+	}
+	rsa = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL);
+	fclose(fp);
+	if (!rsa) {
+		printf("failed to read the private key %s\n", KEY_PATH);
+		return;
+	}
+	printf("loaded private key.\n");
 	
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
@@ -564,7 +632,7 @@ lcore_main(struct rte_mempool *mbuf_pool)
 				printf("type: %x\n", rte_be_to_cpu_16(eh->ether_type));
 
 				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT);
+					retval = handle_arp_packet(mbuf_pool, port, bufs[i], ip_addr[port], &addr, certs, CERT_COUNT, rsa);
 					if (retval != 0) {
 						printf("something is wrong: returned %d\n", retval);
 						continue;
